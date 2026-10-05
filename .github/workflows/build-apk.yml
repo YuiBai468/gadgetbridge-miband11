@@ -10,6 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
 
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,21 +26,34 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # compileSdk 是 37，它只存在于 canary 渠道，所以不能交给
-      # setup-android 的 packages 输入（那只会查稳定渠道）。
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK packages (incl. canary channel)
+      # 不用 android-actions/setup-android：它默认会去装 "tools" 包，
+      # 而那个包已经从 SDK 仓库下架了，action 自己就报
+      # "Failed to find package 'tools'" 挂掉。
+      # ubuntu-latest 的 runner 本来就带 Android SDK，直接用。
+      - name: Install SDK packages
         run: |
           set -x
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          # 先试稳定渠道，再试 canary
-          sdkmanager "platform-tools" "build-tools;35.0.0" > /dev/null 2>&1 || true
-          sdkmanager --channel=3 "platforms;android-37" "build-tools;35.0.0" || \
-          sdkmanager --channel=3 "platforms;android-37" || true
-          echo "--- 装了什么 ---"
-          sdkmanager --list_installed || true
+          SDK="${ANDROID_HOME}"
+          echo "ANDROID_HOME=$SDK"
+          ls "$SDK" || true
+
+          SM=$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
+          echo "sdkmanager = $SM"
+          if [ -z "$SM" ]; then
+            SM=$(find "$SDK" -name sdkmanager -type f 2>/dev/null | head -1)
+          fi
+
+          yes | "$SM" --licenses > /dev/null 2>&1 || true
+
+          # compileSdk 是 37，只在 canary 渠道
+          "$SM" --channel=3 "platforms;android-37" || true
+          "$SM" --channel=3 "build-tools;35.0.0"   || true
+          "$SM" "platform-tools"                    || true
+
+          echo "--- installed ---"
+          "$SM" --list_installed || true
+          echo "--- platforms dir ---"
+          ls "$SDK/platforms" || true
 
       - name: Cache Gradle
         uses: actions/cache@v4
