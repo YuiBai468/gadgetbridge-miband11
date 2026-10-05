@@ -22,10 +22,21 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # compileSdk 是 37，它只存在于 canary 渠道，所以不能交给
+      # setup-android 的 packages 输入（那只会查稳定渠道）。
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: 'platforms;android-37 build-tools;35.0.0 platform-tools'
+
+      - name: Install SDK packages (incl. canary channel)
+        run: |
+          set -x
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          # 先试稳定渠道，再试 canary
+          sdkmanager "platform-tools" "build-tools;35.0.0" > /dev/null 2>&1 || true
+          sdkmanager --channel=3 "platforms;android-37" "build-tools;35.0.0" || \
+          sdkmanager --channel=3 "platforms;android-37" || true
+          echo "--- 装了什么 ---"
+          sdkmanager --list_installed || true
 
       - name: Cache Gradle
         uses: actions/cache@v4
