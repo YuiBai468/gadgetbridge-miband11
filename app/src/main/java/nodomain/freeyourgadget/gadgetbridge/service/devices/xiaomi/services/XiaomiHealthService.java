@@ -86,6 +86,7 @@ import nodomain.freeyourgadget.gadgetbridge.proto.xiaomi.WorkoutStatusWatch;
 import nodomain.freeyourgadget.gadgetbridge.proto.xiaomi.WorkoutStatusWatchSport;
 import nodomain.freeyourgadget.gadgetbridge.proto.xiaomi.XiaomiProto;
 import nodomain.freeyourgadget.gadgetbridge.service.SleepAsAndroidSender;
+import nodomain.freeyourgadget.gadgetbridge.util.HealthPush;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.xiaomi.XiaomiPreferences;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.xiaomi.XiaomiSupport;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.xiaomi.activity.XiaomiActivityFileFetcher;
@@ -1112,6 +1113,12 @@ public class XiaomiHealthService extends AbstractXiaomiService {
         if (sleepAsAndroidSender != null && realTimeStats.getHeartRate() > 0) {
             sleepAsAndroidSender.onHrChanged(realTimeStats.getHeartRate(), 0);
         }
+
+        // Forward the live reading to a user-configured HTTP endpoint.
+        // Queueing only - the actual network call happens off the BLE thread.
+        if (realTimeStats.getHeartRate() > 0) {
+            HealthPush.push(getSupport().getContext(), "hr", realTimeStats.getHeartRate());
+        }
     }
 
     /**
@@ -1234,6 +1241,9 @@ public class XiaomiHealthService extends AbstractXiaomiService {
 
         lastHeartRate = stats.getHeartRate();
 
+        if (stats.getHeartRate() > 0) {
+            HealthPush.push(getSupport().getContext(), "hr", stats.getHeartRate());
+        }
         if (saaRawSensorActive && sleepAsAndroidSender != null) {
             sleepAsAndroidSender.onHrChanged(stats.getHeartRate(), 0);
         }

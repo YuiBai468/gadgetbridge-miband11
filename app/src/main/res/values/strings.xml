@@ -2028,6 +2028,17 @@
     <string name="devicetype_miband9pro" translatable="false">Xiaomi Smart Band 9 Pro</string>
     <string name="devicetype_miband10" translatable="false">Xiaomi Smart Band 10</string>
     <string name="devicetype_miband11" translatable="false">Xiaomi Smart Band 11</string>
+
+    <!-- Health push: send live readings to an HTTP endpoint -->
+    <string name="pref_header_health_push">Health push (HTTP)</string>
+    <string name="pref_title_health_push_enabled">Push readings over HTTP</string>
+    <string name="pref_summary_health_push_enabled">POST each new heart rate reading to the URL below, as JSON, the moment it arrives. Needs this app running and the phone online.</string>
+    <string name="pref_title_health_push_url">Endpoint URL</string>
+    <string name="pref_summary_health_push_url">Where to POST to, e.g. http://192.168.1.10:8765/hr</string>
+    <string name="pref_title_health_push_token">Token</string>
+    <string name="pref_summary_health_push_token">Optional. Sent as the X-Token header, so the receiver can reject strangers.</string>
+    <string name="pref_title_health_push_min_interval">Minimum interval (seconds)</string>
+    <string name="pref_summary_health_push_min_interval">Don't push more often than this. Identical values are skipped anyway.</string>
     <string name="devicetype_miband10pro" translatable="false">Xiaomi Smart Band 10 Pro</string>
     <string name="devicetype_amazfit_balance" translatable="false">Amazfit Balance</string>
     <string name="devicetype_amazfit_balance_2" translatable="false">Amazfit Balance 2</string>

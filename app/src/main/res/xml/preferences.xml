@@ -8,6 +8,43 @@
         app:isPreferenceVisible="false" />
 
     <PreferenceScreen
+        android:icon="@drawable/ic_file_export"
+        android:key="pref_screen_health_push"
+        android:title="@string/pref_header_health_push">
+
+        <SwitchPreferenceCompat
+            android:defaultValue="false"
+            android:key="health_push_enabled"
+            android:layout="@layout/preference_checkbox"
+            android:summary="@string/pref_summary_health_push_enabled"
+            android:title="@string/pref_title_health_push_enabled"
+            app:iconSpaceReserved="false" />
+
+        <EditTextPreference
+            android:dependency="health_push_enabled"
+            android:key="health_push_url"
+            android:summary="@string/pref_summary_health_push_url"
+            android:title="@string/pref_title_health_push_url"
+            app:iconSpaceReserved="false" />
+
+        <EditTextPreference
+            android:dependency="health_push_enabled"
+            android:key="health_push_token"
+            android:summary="@string/pref_summary_health_push_token"
+            android:title="@string/pref_title_health_push_token"
+            app:iconSpaceReserved="false" />
+
+        <EditTextPreference
+            android:defaultValue="10"
+            android:dependency="health_push_enabled"
+            android:inputType="number"
+            android:key="health_push_min_interval"
+            android:summary="@string/pref_summary_health_push_min_interval"
+            android:title="@string/pref_title_health_push_min_interval"
+            app:iconSpaceReserved="false" />
+    </PreferenceScreen>
+
+    <PreferenceScreen
         android:icon="@drawable/ic_settings"
         android:key="pref_screen_general"
         android:summary="@string/pref_description_general"
