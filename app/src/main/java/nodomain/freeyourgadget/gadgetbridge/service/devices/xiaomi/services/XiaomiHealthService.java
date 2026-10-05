@@ -1117,7 +1117,7 @@ public class XiaomiHealthService extends AbstractXiaomiService {
         // Forward the live reading to a user-configured HTTP endpoint.
         // Queueing only - the actual network call happens off the BLE thread.
         if (realTimeStats.getHeartRate() > 0) {
-            HealthPush.push(getSupport().getContext(), "hr", realTimeStats.getHeartRate());
+            HealthPush.push("hr", realTimeStats.getHeartRate());
         }
     }
 
@@ -1242,7 +1242,7 @@ public class XiaomiHealthService extends AbstractXiaomiService {
         lastHeartRate = stats.getHeartRate();
 
         if (stats.getHeartRate() > 0) {
-            HealthPush.push(getSupport().getContext(), "hr", stats.getHeartRate());
+            HealthPush.push("hr", stats.getHeartRate());
         }
         if (saaRawSensorActive && sleepAsAndroidSender != null) {
             sleepAsAndroidSender.onHrChanged(stats.getHeartRate(), 0);

@@ -16,9 +16,11 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>. */
 package nodomain.freeyourgadget.gadgetbridge.util;
 
-import android.content.Context;
+import androidx.annotation.Nullable;
 
 import nodomain.freeyourgadget.gadgetbridge.GBApplication;
+import nodomain.freeyourgadget.gadgetbridge.entities.XiaomiActivitySample;
+import nodomain.freeyourgadget.gadgetbridge.model.ActivityKind;
 
 import org.json.JSONObject;
 import org.slf4j.Logger;
@@ -35,13 +37,20 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Pushes live health readings to an HTTP endpoint as JSON.
+ * Pushes health readings to a user-configured HTTP endpoint as JSON.
  *
  * <p>Gadgetbridge can already export its database periodically, but the smallest
  * export interval is one hour — far too slow for reacting to a live reading.
- * This pushes each reading the moment it arrives instead.
+ * This pushes readings the moment they arrive instead.
  *
- * <p>Configuration lives in the main preferences screen ("Health push").
+ * <p>Where each metric comes from:
+ * <ul>
+ *   <li>{@code hr} — streamed live by the band, hooked in {@code XiaomiHealthService}</li>
+ *   <li>{@code stress}, {@code spo2}, {@code steps}, {@code sleep} — written to the
+ *       database, hooked in {@code XiaomiSampleProvider}. Nothing but HR is a live
+ *       stream: stress and SpO2 arrive from on-demand measurements or periodic
+ *       syncs, sleep only after a sync.</li>
+ * </ul>
  *
  * <p>Design notes:
  * <ul>
@@ -50,8 +59,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li>All errors are swallowed and logged. A dead endpoint, no network or a
  *       wrong URL must never crash the device service.</li>
  *   <li>Repeated identical values are dropped, and there is a minimum interval
- *       between pushes, so we do not hammer the endpoint (or the phone's radio)
- *       when the band reports the same reading every second.</li>
+ *       between pushes, so a batch sync of a day's samples cannot flood the
+ *       endpoint.</li>
+ *   <li>The pending queue is bounded: if the endpoint is slow or dead we drop
+ *       new work rather than grow an unbounded backlog.</li>
  * </ul>
  */
 public final class HealthPush {
@@ -65,18 +76,22 @@ public final class HealthPush {
     private static final int CONNECT_TIMEOUT_MS = 3000;
     private static final int READ_TIMEOUT_MS = 3000;
 
+    /** Drop new readings once this many are already waiting to be sent. */
+    private static final int MAX_PENDING = 32;
+
     private static final ExecutorService POOL = Executors.newSingleThreadExecutor(r -> {
         final Thread t = new Thread(r, "HealthPush");
         t.setDaemon(true);
         return t;
     });
 
-    /** metric name -> (last value, last push wall clock) */
+    /** metric name -> {last value, last push wall clock} */
     private static final Map<String, long[]> LAST = new ConcurrentHashMap<>();
 
-    /** Dropped pushes since process start, for the settings summary. */
+    private static final AtomicInteger PENDING = new AtomicInteger();
     private static final AtomicInteger PUSHED = new AtomicInteger();
     private static final AtomicInteger FAILED = new AtomicInteger();
+    private static final AtomicInteger DROPPED = new AtomicInteger();
 
     private HealthPush() {
     }
@@ -89,16 +104,23 @@ public final class HealthPush {
         return FAILED.get();
     }
 
+    public static int getDroppedCount() {
+        return DROPPED.get();
+    }
+
     /**
      * Queue a reading for delivery. Safe to call from any thread; returns
      * immediately.
      *
-     * @param context any context, used to read preferences
-     * @param metric  short metric name, e.g. {@code hr}
-     * @param value   the reading
+     * @param metric short metric name, e.g. {@code hr}, {@code stress}, {@code spo2}
+     * @param value  the reading; non-positive values are ignored
      */
-    public static void push(final Context context, final String metric, final int value) {
-        if (context == null || metric == null) {
+    public static void push(final String metric, final int value) {
+        push(metric, value, null);
+    }
+
+    public static void push(final String metric, final int value, @Nullable final String text) {
+        if (metric == null || value <= 0) {
             return;
         }
         final Prefs prefs;
@@ -123,9 +145,49 @@ public final class HealthPush {
         if (!shouldSend(metric, value, minInterval)) {
             return;
         }
-        final String finalUrl = url.trim();
-        final String finalToken = token == null ? "" : token.trim();
-        POOL.execute(() -> doPost(finalUrl, finalToken, metric, value));
+        if (PENDING.get() >= MAX_PENDING) {
+            DROPPED.incrementAndGet();
+            return;
+        }
+        PENDING.incrementAndGet();
+        POOL.execute(() -> {
+            try {
+                doPost(url.trim(), token == null ? "" : token.trim(), metric, value, text);
+            } finally {
+                PENDING.decrementAndGet();
+            }
+        });
+    }
+
+    /**
+     * Push everything interesting a Xiaomi sample carries. Unset values (0, or
+     * "not measured") are skipped by {@link #push}.
+     *
+     * @param includeSteps pass false for batch syncs, where the step counter
+     *                     changes on every sample and is not worth reporting
+     */
+    public static void pushSample(@Nullable final XiaomiActivitySample sample,
+                                  final boolean includeSteps) {
+        if (sample == null) {
+            return;
+        }
+        push("hr", sample.getHeartRate());
+        push("stress", sample.getStress());
+        push("spo2", sample.getSpo2());
+        if (includeSteps) {
+            push("steps", sample.getSteps());
+        }
+        final ActivityKind kind = sample.getKind();
+        if (kind == null || kind == ActivityKind.UNKNOWN || kind == ActivityKind.NOT_MEASURED) {
+            return;
+        }
+        // Only report sleep/wake, not every sport
+        if (kind == ActivityKind.LIGHT_SLEEP || kind == ActivityKind.DEEP_SLEEP
+                || kind == ActivityKind.REM_SLEEP || kind == ActivityKind.AWAKE_SLEEP) {
+            push("sleep", kind.getCode(), kind.name());
+        } else if (kind == ActivityKind.ACTIVITY || kind == ActivityKind.WALKING) {
+            push("awake", kind.getCode(), kind.name());
+        }
     }
 
     /**
@@ -148,13 +210,16 @@ public final class HealthPush {
         return true;
     }
 
-    private static void doPost(final String url, final String token,
-                               final String metric, final int value) {
+    private static void doPost(final String url, final String token, final String metric,
+                               final int value, @Nullable final String text) {
         HttpURLConnection conn = null;
         try {
             final JSONObject body = new JSONObject();
             body.put("metric", metric);
             body.put("value", value);
+            if (text != null && !text.isEmpty()) {
+                body.put("text", text);
+            }
             body.put("ts", System.currentTimeMillis() / 1000L);
             body.put("source", "gadgetbridge");
 
@@ -179,7 +244,6 @@ public final class HealthPush {
                 FAILED.incrementAndGet();
                 LOG.warn("Health push got HTTP {} for {}", code, metric);
             }
-            // Drain so the connection can be reused / closed cleanly
             try (java.io.InputStream is = code >= 400 ? conn.getErrorStream() : conn.getInputStream()) {
                 if (is != null) {
                     final byte[] buf = new byte[256];

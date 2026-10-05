@@ -37,6 +37,7 @@ import nodomain.freeyourgadget.gadgetbridge.entities.XiaomiSleepTimeSample;
 import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivityKind;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivitySample;
+import nodomain.freeyourgadget.gadgetbridge.util.HealthPush;
 import nodomain.freeyourgadget.gadgetbridge.util.RangeMap;
 
 public class XiaomiSampleProvider extends AbstractSampleProvider<XiaomiActivitySample> {
@@ -212,6 +213,31 @@ public class XiaomiSampleProvider extends AbstractSampleProvider<XiaomiActivityS
                     sample.setRawIntensity(ActivitySample.NOT_MEASURED);
                 }
             }
+        }
+    }
+
+    /**
+     * Every sample that reaches the database passes through here, which makes
+     * this the one place that sees heart rate, stress, SpO2, steps and sleep
+     * stages alike. Only the readings a user would care about are forwarded -
+     * everything else is dropped by HealthPush's deduplication.
+     */
+    @Override
+    public void addGBActivitySample(final XiaomiActivitySample activitySample) {
+        super.addGBActivitySample(activitySample);
+        HealthPush.pushSample(activitySample, true);
+    }
+
+    /**
+     * Batch syncs hand us a whole day at once. Pushing every sample would be
+     * thousands of calls, so only the newest one is forwarded - that is the
+     * fresh information from this sync.
+     */
+    @Override
+    public void addGBActivitySamples(final List<XiaomiActivitySample> activitySamples) {
+        super.addGBActivitySamples(activitySamples);
+        if (activitySamples != null && !activitySamples.isEmpty()) {
+            HealthPush.pushSample(activitySamples.get(activitySamples.size() - 1), false);
         }
     }
 }
