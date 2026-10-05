@@ -847,7 +847,32 @@ public class XiaomiHealthService extends AbstractXiaomiService {
                 if (startOnPhone) {
                     OpenTracksController.stopRecording(getSupport().getContext());
                 }
+                HealthPush.pushEvent("workout", "finished");
                 break;
+        }
+
+        // Report the workout state. The sport name comes from the same mapping
+        // OpenTracks uses, so it is a real activity name ("RUNNING"), not a code.
+        switch (workoutStatus.getStatus()) {
+            case WORKOUT_STARTED:
+                HealthPush.pushEvent("workout", "started:" + sportName(workoutStatus.getSport()));
+                break;
+            case WORKOUT_PAUSED:
+                HealthPush.pushEvent("workout", "paused");
+                break;
+            case WORKOUT_RESUMED:
+                HealthPush.pushEvent("workout", "resumed");
+                break;
+        }
+    }
+
+    /** Sport code -> activity name, for reporting; never returns null. */
+    private String sportName(final int sport) {
+        try {
+            final ActivityKind kind = sportToActivityKind(sport);
+            return kind != null ? kind.name() : ("sport" + sport);
+        } catch (final Exception e) {
+            return "sport" + sport;
         }
     }
 
@@ -1244,6 +1269,10 @@ public class XiaomiHealthService extends AbstractXiaomiService {
         if (stats.getHeartRate() > 0) {
             HealthPush.push("hr", stats.getHeartRate());
         }
+        // Live workout figures, so she can react to distance/calories too
+        HealthPush.push("calories", stats.getCalories());
+        HealthPush.push("distance", stats.getDistance());
+        HealthPush.push("workout_steps", stats.getSteps());
         if (saaRawSensorActive && sleepAsAndroidSender != null) {
             sleepAsAndroidSender.onHrChanged(stats.getHeartRate(), 0);
         }

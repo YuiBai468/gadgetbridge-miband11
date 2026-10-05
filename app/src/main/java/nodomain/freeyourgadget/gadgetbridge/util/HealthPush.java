@@ -142,7 +142,10 @@ public final class HealthPush {
             minInterval = Integer.parseInt(prefs.getString(PREF_MIN_INTERVAL_S, "10").trim());
         } catch (final Exception ignored) {
         }
-        if (!shouldSend(metric, value, minInterval)) {
+        // 去重键要带上 text：否则"跑步开始"和"跑步结束"的 value 都是 1，
+        // 第二条会被当成重复值给丢掉。
+        final String key = (text == null || text.isEmpty()) ? metric : metric + "|" + text;
+        if (!shouldSend(key, value, minInterval)) {
             return;
         }
         if (PENDING.get() >= MAX_PENDING) {
@@ -157,6 +160,15 @@ public final class HealthPush {
                 PENDING.decrementAndGet();
             }
         });
+    }
+
+    /**
+     * Push an event that carries no meaningful numeric value, such as a workout
+     * starting or finishing. The {@code text} is what distinguishes events, and
+     * is also what they de-duplicate on.
+     */
+    public static void pushEvent(final String metric, @Nullable final String text) {
+        push(metric, 1, text);
     }
 
     /**
