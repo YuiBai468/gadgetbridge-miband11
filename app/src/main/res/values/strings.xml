@@ -2038,7 +2038,7 @@
     <string name="pref_title_health_push_token">Token</string>
     <string name="pref_summary_health_push_token">Optional. Sent as the X-Token header, so the receiver can reject strangers.</string>
     <string name="pref_title_health_push_min_interval">Minimum interval (seconds)</string>
-    <string name="pref_summary_health_push_min_interval">Don't push more often than this. Identical values are skipped anyway.</string>
+    <string name="pref_summary_health_push_min_interval">Minimum seconds between pushes. Identical values are skipped anyway.</string>
     <string name="devicetype_miband10pro" translatable="false">Xiaomi Smart Band 10 Pro</string>
     <string name="devicetype_amazfit_balance" translatable="false">Amazfit Balance</string>
     <string name="devicetype_amazfit_balance_2" translatable="false">Amazfit Balance 2</string>

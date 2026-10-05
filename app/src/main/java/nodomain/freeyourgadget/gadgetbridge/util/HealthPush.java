@@ -22,6 +22,7 @@ import nodomain.freeyourgadget.gadgetbridge.GBApplication;
 import nodomain.freeyourgadget.gadgetbridge.entities.XiaomiActivitySample;
 import nodomain.freeyourgadget.gadgetbridge.model.ActivityKind;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +31,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -163,6 +165,76 @@ public final class HealthPush {
     }
 
     /**
+     * Push a daily-summary row: resting heart rate, heart-rate range, average,
+     * max and min stress and SpO2, training load, and so on.
+     *
+     * <p>These are the numbers that never appear in the real-time stream and are
+     * not part of any individual activity sample — the band aggregates them per
+     * day and Gadgetbridge stores them in {@code XiaomiDailySummarySample}.
+     */
+    public static void pushDailySummary(final String text) {
+        push("daily_summary", 1, text);
+    }
+
+    /**
+     * Push one manual measurement. {@code XiaomiManualSample} is type + value:
+     * the band stores whatever the user measured on demand (temperature, SpO2,
+     * stress, ...).
+     */
+    public static void pushManualSample(final int type, final int value, final long ts) {
+        push("manual", value, "type=" + type + ",ts=" + ts);
+    }
+
+    /**
+     * Push a whole batch of samples as one compact JSON array.
+     *
+     * <p>This is the "dumb pipe" mode: the phone stops deciding what matters and
+     * simply forwards everything it has, and all thresholds, scenarios and
+     * wording live on the receiving side. That way adding a new reaction — or
+     * retuning one — never needs a new APK.
+     *
+     * <p>An earlier version forwarded only the newest sample of a batch, which
+     * silently threw away an entire day of history; the per-sample path also
+     * rate-limits, so most of a sync was lost.
+     *
+     * <p>Roughly 50 bytes per sample: a full day is about 70 KB, sent once per
+     * sync.
+     */
+    public static void pushSampleBatch(@Nullable final List<XiaomiActivitySample> samples) {
+        if (samples == null || samples.isEmpty()) {
+            return;
+        }
+        try {
+            final JSONArray arr = new JSONArray();
+            for (final XiaomiActivitySample s : samples) {
+                if (s == null) {
+                    continue;
+                }
+                final JSONObject o = new JSONObject();
+                o.put("t", s.getTimestamp());
+                o.put("hr", s.getHeartRate());
+                o.put("st", s.getStress());
+                o.put("sp", s.getSpo2());
+                o.put("step", s.getSteps());
+                // 顺手一起发 —— 反正都在同一个样本里，现在不发以后就得为它们重编一次 APK
+                o.put("cal", s.getActiveCalories());
+                o.put("dist", s.getDistanceCm());
+                o.put("int", Math.round(s.getIntensity()));
+                o.put("en", s.getEnergy());
+                final ActivityKind kind = s.getKind();
+                o.put("k", kind != null ? kind.name() : "");
+                arr.put(o);
+            }
+            if (arr.length() == 0) {
+                return;
+            }
+            push("samples", arr.length(), arr.toString());
+        } catch (final Exception e) {
+            LOG.warn("Health push: could not build sample batch", e);
+        }
+    }
+
+    /**
      * Push an event that carries no meaningful numeric value, such as a workout
      * starting or finishing. The {@code text} is what distinguishes events, and
      * is also what they de-duplicate on.
@@ -203,8 +275,43 @@ public final class HealthPush {
     }
 
     /**
-     * @return true if this reading is worth sending: different from the last
-     * value, or at least {@code minInterval} seconds have passed.
+     * Push one night's sleep as a single summary.
+     *
+     * <p>Sleep cannot be sent sample by sample: the stages only arrive with a
+     * batch sync, which would mean thousands of pushes for one night, and the
+     * per-sample hook deliberately only forwards the newest entry. Everything
+     * needed for a sleep-quality judgement is already summed up by
+     * {@code SleepStagesParser} though — total, deep, light, REM and the
+     * minutes spent awake — so send that instead.
+     *
+     * @param totalMin  total sleep in minutes (also the metric value)
+     * @param bedTime   epoch seconds the band considers real sleep to start
+     * @param wakeupTime epoch seconds sleep ended
+     */
+    public static void pushSleepSummary(final int totalMin, final int deepMin, final int lightMin,
+                                        final int remMin, final int awakeMin,
+                                        final long bedTime, final long wakeupTime) {
+        if (totalMin <= 0) {
+            return;
+        }
+        final String text = String.format(java.util.Locale.US,
+                "total=%d,deep=%d,light=%d,rem=%d,awake=%d,bed=%d,wake=%d",
+                totalMin, deepMin, lightMin, remMin, awakeMin, bedTime, wakeupTime);
+        push("sleep_summary", totalMin, text);
+    }
+
+    /**
+     * Rate limit. Anything arriving sooner than {@code minInterval} seconds
+     * after the last accepted reading for this metric is dropped, whatever its
+     * value.
+     *
+     * <p>The check order matters: an earlier version pushed whenever the value
+     * *changed*, and only applied the interval to repeated values. Heart rate
+     * changes every single second, so that turned into one HTTP POST per second
+     * — tens of thousands a day, and a pointless drain on the band and the
+     * phone's radio.
+     *
+     * @return true if this reading should be sent
      */
     private static boolean shouldSend(final String metric, final int value, final int minInterval) {
         final long now = System.currentTimeMillis();
@@ -213,9 +320,7 @@ public final class HealthPush {
             LAST.put(metric, new long[]{value, now});
             return true;
         }
-        final boolean changed = prev[0] != value;
-        final boolean stale = now - prev[1] >= minInterval * 1000L;
-        if (!changed && !stale) {
+        if (now - prev[1] < minInterval * 1000L) {
             return false;
         }
         LAST.put(metric, new long[]{value, now});

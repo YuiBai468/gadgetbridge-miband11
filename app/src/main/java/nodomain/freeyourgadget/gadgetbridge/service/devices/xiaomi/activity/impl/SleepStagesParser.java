@@ -41,6 +41,7 @@ import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.xiaomi.activity.XiaomiActivityFileId;
 import nodomain.freeyourgadget.gadgetbridge.service.devices.xiaomi.activity.XiaomiActivityParser;
 import nodomain.freeyourgadget.gadgetbridge.util.GB;
+import nodomain.freeyourgadget.gadgetbridge.util.HealthPush;
 
 public class SleepStagesParser extends XiaomiActivityParser {
     private static final Logger LOG = LoggerFactory.getLogger(SleepStagesParser.class);
@@ -144,6 +145,12 @@ public class SleepStagesParser extends XiaomiActivityParser {
             }
 
             sampleProvider.addSample(sample);
+
+            // 整晚的睡眠结构在这里是齐的（都是分钟），一次性推给电脑。
+            // 逐条推不行：阶段样本只在批量同步时到达，一晚几千条。
+            HealthPush.pushSleepSummary(
+                    sleepDuration, deepSleepDuration, lightSleepDuration,
+                    REMDuration, wakeDuration, bedTime, wakeupTime);
         } catch (final Exception e) {
             GB.toast(context, "Error saving sleep sample", Toast.LENGTH_LONG, GB.ERROR);
             LOG.error("Error saving sleep sample", e);

@@ -54,6 +54,14 @@ import nodomain.freeyourgadget.gadgetbridge.model.Contact;
 import nodomain.freeyourgadget.gadgetbridge.model.MusicSpec;
 import nodomain.freeyourgadget.gadgetbridge.model.MusicStateSpec;
 import nodomain.freeyourgadget.gadgetbridge.model.NotificationSpec;
+import nodomain.freeyourgadget.gadgetbridge.model.RecordedDataTypes;
+import nodomain.freeyourgadget.gadgetbridge.util.HealthPush;
+import nodomain.freeyourgadget.gadgetbridge.database.DBHandler;
+import nodomain.freeyourgadget.gadgetbridge.entities.DaoSession;
+import nodomain.freeyourgadget.gadgetbridge.entities.XiaomiDailySummarySample;
+import nodomain.freeyourgadget.gadgetbridge.entities.XiaomiDailySummarySampleDao;
+import nodomain.freeyourgadget.gadgetbridge.entities.XiaomiManualSample;
+import nodomain.freeyourgadget.gadgetbridge.entities.XiaomiManualSampleDao;
 import nodomain.freeyourgadget.gadgetbridge.model.Reminder;
 import nodomain.freeyourgadget.gadgetbridge.model.WorldClock;
 import nodomain.freeyourgadget.gadgetbridge.externalevents.sleepasandroid.SleepAsAndroidAction;
@@ -95,6 +103,25 @@ public class XiaomiSupport extends AbstractBluetoothDeviceSupport {
 
 
     private String cachedFirmwareVersion = null;
+
+    /**
+     * Periodic recorded-data fetch.
+     *
+     * <p>The band only streams heart rate, steps and calories in real time — see
+     * {@code RealTimeStats} in wear_fitness.proto. Stress, SpO2 and sleep are
+     * measured by the band but never pushed: Gadgetbridge has to fetch them, and
+     * by default that only happens when the phone is unlocked. That made the
+     * data arrive whenever the user happened to pick up their phone rather than
+     * when the band recorded it.
+     *
+     * <p>This ticker asks for them every {@link #FETCH_INTERVAL_MS} instead.
+     * Whatever comes back is written to the database and pushed to the endpoint
+     * immediately, so "the phone was unlocked" stops being part of the path.
+     */
+    private static final long FETCH_INTERVAL_MS = 30_000L;
+    private final android.os.Handler fetchHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private volatile boolean fetchTickerRunning = false;
     private XiaomiConnectionSupport connectionSupport = null;
     private SleepAsAndroidSender sleepAsAndroidSender;
     private final SleepAsAndroidVibration.Toggle findDeviceToggle = new SleepAsAndroidVibration.Toggle() {
@@ -128,6 +155,106 @@ public class XiaomiSupport extends AbstractBluetoothDeviceSupport {
         put(XiaomiRpkService.COMMAND_TYPE, rpkService);
     }};
 
+    /** 上次推过的日摘要 / 手动测量时间戳，避免每 30 秒重复推同一份。 */
+    private long lastDailySummaryTs = 0L;
+    private final java.util.Set<Long> pushedManualTs = new java.util.HashSet<>();
+
+    /**
+     * Push the data that is not in the real-time stream and not part of a single
+     * activity sample: the per-day aggregates (resting heart rate, stress and
+     * SpO2 averages, training load) and any on-demand measurements.
+     *
+     * <p>Read straight from the database on each tick. Only new rows are sent,
+     * so this stays quiet when nothing has changed.
+     */
+    private void pushLatestSummaries() {
+        try (DBHandler handler = GBApplication.acquireDB()) {
+            final DaoSession session = handler.getDaoSession();
+
+            final java.util.List<XiaomiDailySummarySample> daily =
+                    session.getXiaomiDailySummarySampleDao().queryBuilder()
+                            .orderDesc(XiaomiDailySummarySampleDao.Properties.Timestamp)
+                            .limit(1)
+                            .list();
+            if (!daily.isEmpty()) {
+                final XiaomiDailySummarySample d = daily.get(0);
+                if (d.getTimestamp() != lastDailySummaryTs) {
+                    lastDailySummaryTs = d.getTimestamp();
+                    HealthPush.pushDailySummary(String.format(java.util.Locale.US,
+                            "ts=%d,hrRest=%d,hrMin=%d,hrMax=%d,hrAvg=%d,"
+                                    + "stressAvg=%d,stressMin=%d,stressMax=%d,"
+                                    + "spo2Avg=%d,spo2Min=%d,spo2Max=%d,"
+                                    + "steps=%d,cal=%d,standing=%d,loadDay=%d,loadWeek=%d,loadLevel=%d",
+                            d.getTimestamp(), nz(d.getHrResting()), nz(d.getHrMin()),
+                            nz(d.getHrMax()), nz(d.getHrAvg()),
+                            nz(d.getStressAvg()), nz(d.getStressMin()), nz(d.getStressMax()),
+                            nz(d.getSpo2Avg()), nz(d.getSpo2Min()), nz(d.getSpo2Max()),
+                            nz(d.getSteps()), nz(d.getCalories()), nz(d.getStanding()),
+                            nz(d.getTrainingLoadDay()), nz(d.getTrainingLoadWeek()),
+                            nz(d.getTrainingLoadLevel())));
+                }
+            }
+
+            final java.util.List<XiaomiManualSample> manual =
+                    session.getXiaomiManualSampleDao().queryBuilder()
+                            .orderDesc(XiaomiManualSampleDao.Properties.Timestamp)
+                            .limit(20)
+                            .list();
+            for (final XiaomiManualSample m : manual) {
+                if (pushedManualTs.contains(m.getTimestamp())) {
+                    continue;
+                }
+                pushedManualTs.add(m.getTimestamp());
+                HealthPush.pushManualSample(nz(m.getType()), nz(m.getValue()), m.getTimestamp());
+            }
+            if (pushedManualTs.size() > 500) {
+                pushedManualTs.clear();     // 别无限涨
+            }
+        } catch (final Exception e) {
+            LOG.warn("Could not push health summaries", e);
+        }
+    }
+
+    private static int nz(final Integer v) {
+        return v == null ? 0 : v;
+    }
+
+    private void startFetchTicker() {
+        if (fetchTickerRunning) {
+            return;
+        }
+        fetchTickerRunning = true;
+        fetchHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (!fetchTickerRunning) {
+                    return;
+                }
+                try {
+                    // 只在真正连着的时候抓，否则发了也白发
+                    if (gbDevice != null
+                            && gbDevice.getState().equalsOrHigherThan(GBDevice.State.INITIALIZED)) {
+                        onFetchRecordedData(RecordedDataTypes.TYPE_ACTIVITY
+                                | RecordedDataTypes.TYPE_STRESS
+                                | RecordedDataTypes.TYPE_SPO2
+                                | RecordedDataTypes.TYPE_SLEEP);
+                    }
+                    pushLatestSummaries();
+                } catch (final Exception e) {
+                    LOG.warn("Periodic health fetch failed", e);
+                }
+                if (fetchTickerRunning) {
+                    fetchHandler.postDelayed(this, FETCH_INTERVAL_MS);
+                }
+            }
+        });
+    }
+
+    private void stopFetchTicker() {
+        fetchTickerRunning = false;
+        fetchHandler.removeCallbacksAndMessages(null);
+    }
+
     @Override
     public boolean useAutoConnect() {
         return true;
@@ -139,6 +266,11 @@ public class XiaomiSupport extends AbstractBluetoothDeviceSupport {
         if (this.connectionSupport != null) {
             this.connectionSupport.setAutoReconnect(enabled);
         }
+    }
+
+    {
+        // 构造函数块：连着设备期间就一直在跑，断连时 tick 自己会跳过
+        startFetchTicker();
     }
 
     private XiaomiConnectionSupport createConnectionSpecificSupport() {
@@ -175,6 +307,7 @@ public class XiaomiSupport extends AbstractBluetoothDeviceSupport {
 
     @Override
     public void dispose() {
+        stopFetchTicker();
         saaAlarms.cancel();
 
         for (final AbstractXiaomiService service : mServiceMap.values()) {

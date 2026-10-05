@@ -236,8 +236,8 @@ public class XiaomiSampleProvider extends AbstractSampleProvider<XiaomiActivityS
     @Override
     public void addGBActivitySamples(final List<XiaomiActivitySample> activitySamples) {
         super.addGBActivitySamples(activitySamples);
-        if (activitySamples != null && !activitySamples.isEmpty()) {
-            HealthPush.pushSample(activitySamples.get(activitySamples.size() - 1), false);
-        }
+        // 整批发过去，不再只发最后一条 —— 只发最后一条等于把一整天扔掉。
+        // 判断放电脑端做，手机只负责当哑管道，以后改阈值不用重编 APK。
+        HealthPush.pushSampleBatch(activitySamples);
     }
 }

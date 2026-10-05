@@ -56,8 +56,18 @@
     <uses-permission android:name="nz.eloque.foss_wallet.READ_CARDS"/>
     <uses-permission android:name="nz.eloque.foss_wallet.dev.READ_CARDS"/>
 
-    <!-- Make sure we don't get the INTERNET permission even when a dependency requires it -->
-    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <!--
+        Health push needs network access.
+
+        Upstream removes the INTERNET permission on purpose — Gadgetbridge is a
+        "cloudless" app and must never talk to the network. Our health push is a
+        LAN-only POST to a machine the user owns, so this fork needs it back.
+
+        Without it the app has no network access at all, and the failure is
+        silent: HttpURLConnection throws, HealthPush swallows it, and nothing
+        shows up on either side. (Cost us a long debugging session.)
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Internet Helper -->
     <uses-permission android:name="nodomain.freeyourgadget.internethelper.INTERNET"/>
